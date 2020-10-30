@@ -23,6 +23,9 @@ module XMonad.Hooks.EwmhDesktops (
     ewmhDesktopsLogHookCustom,
     NetActivated (..),
     activated,
+    isWmSourceUser,
+    isWmSourceApp,
+    isWmSourceOther,
     activateLogHook,
     ewmhDesktopsEventHook,
     ewmhDesktopsEventHookCustom,
@@ -213,13 +216,28 @@ ewmhDesktopsEventHook = ewmhDesktopsEventHookCustom id
 ewmhDesktopsEventHookCustom :: ([WindowSpace] -> [WindowSpace]) -> Event -> X All
 ewmhDesktopsEventHookCustom f e = handle f e >> return (All True)
 
+data WmSourceType   = WmSourceUser
+                    | WmSourceApp
+                    | WmSourceOther
+  deriving (Show, Eq, Typeable)
+instance ExtensionClass WmSourceType where
+    initialValue    = WmSourceOther
+isWmSourceUser :: Query Bool
+isWmSourceUser      = (== WmSourceUser) . wmSourceType <$> liftX XS.get
+isWmSourceApp :: Query Bool
+isWmSourceApp       = (== WmSourceApp) . wmSourceType <$> liftX XS.get
+isWmSourceOther :: Query Bool
+isWmSourceOther     = (== WmSourceOther) . wmSourceType <$> liftX XS.get
+
 -- | Whether new window _NET_ACTIVE_WINDOW activated or not. I should keep
 -- this value in global state, because i use 'logHook' for handling activated
 -- windows and i need a way to tell 'logHook' what window is activated.
-newtype NetActivated    = NetActivated {netActivated :: Maybe Window}
+data NetActivated       = NetActivated {netActivated :: Maybe Window, wmSourceType :: WmSourceType}
   deriving (Show, Typeable)
+defaultNetActivated :: NetActivated
+defaultNetActivated     = NetActivated {netActivated = Nothing, wmSourceType = WmSourceOther}
 instance ExtensionClass NetActivated where
-    initialValue        = NetActivated Nothing
+    initialValue        = defaultNetActivated
 
 -- | Was new window @_NET_ACTIVE_WINDOW@ activated?
 activated :: Query Bool
@@ -244,7 +262,7 @@ activateLogHook mh  = XS.get >>= maybe (return ()) go . netActivated
         --  * if i reset 'NetActivated' before running 'logHook' once,
         --  then 'activated' predicate won't match.
         -- Thus, here is the /only/ correct place.
-        XS.put NetActivated{netActivated = Nothing}
+        XS.put defaultNetActivated
         windows (appEndo f)
 
 handle :: ([WindowSpace] -> [WindowSpace]) -> Event -> X ()
@@ -273,7 +291,13 @@ handle f (ClientMessageEvent {
                  else  trace $ "Bad _NET_DESKTOP with data[0]="++show n
         else if mt == a_aw then do
                lh <- asks (logHook . config)
-               XS.put (NetActivated (Just w))
+               let wst = case d of
+                            (2 : _) -> WmSourceUser
+                            (1 : _) -> WmSourceApp
+                            _       -> WmSourceOther
+               let na = NetActivated {netActivated = Just w, wmSourceType = wst}
+               trace (show na)
+               XS.put na
                lh
         else if mt == a_cw then
                killWindow w
